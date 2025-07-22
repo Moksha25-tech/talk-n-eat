@@ -120,45 +120,66 @@ export const categories = [
 ];
 
 /**
- * Simple Natural Language Processing mock function
- * Extracts food item names from voice transcript using keyword matching
+ * Enhanced Natural Language Processing function
+ * Extracts food item names from voice transcript without requiring "I want"
  * @param transcript - The voice input text to parse
  * @param foodItems - Array of available food items to match against
  * @returns Array of matched food items with quantities
  */
 export const parseVoiceTranscript = (transcript: string, foodItems: FoodItem[]) => {
   const foundItems: { item: FoodItem; quantity: number }[] = [];
-  const lowerTranscript = transcript.toLowerCase();
+  const lowerTranscript = transcript.toLowerCase().trim();
   
-  // Keywords for quantity detection
+  // Enhanced keywords for quantity detection
   const quantityMap: { [key: string]: number } = {
     'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
     'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
     '1': 1, '2': 2, '3': 3, '4': 4, '5': 5,
-    '6': 6, '7': 7, '8': 8, '9': 9, '10': 10
+    '6': 6, '7': 7, '8': 8, '9': 9, '10': 10,
+    'a': 1, 'an': 1, 'single': 1, 'double': 2, 'triple': 3
   };
   
-  // Search for each food item in the transcript
-  foodItems.forEach(item => {
-    const itemName = item.name.toLowerCase();
+  // Remove common prefixes that users might say
+  const cleanedTranscript = lowerTranscript
+    .replace(/^(i want|i need|i would like|give me|i'll have|can i get|let me have)\s*/i, '')
+    .replace(/\s+(please|thanks|thank you)$/i, '');
+  
+  // Split by common separators
+  const segments = cleanedTranscript.split(/\s+and\s+|\s*,\s*|\s+also\s+/);
+  
+  segments.forEach(segment => {
+    const trimmedSegment = segment.trim();
     
-    // Check if item name appears in transcript
-    if (lowerTranscript.includes(itemName)) {
-      let quantity = 1; // default quantity
+    // Search for each food item in the segment
+    foodItems.forEach(item => {
+      const itemName = item.name.toLowerCase();
+      const itemWords = itemName.split(' ');
       
-      // Look for quantity words before the item name
-      const words = lowerTranscript.split(' ');
-      const itemIndex = words.findIndex(word => itemName.includes(word));
+      // Check if item name appears in segment (exact match or partial match)
+      const isExactMatch = trimmedSegment.includes(itemName);
+      const isPartialMatch = itemWords.some(word => 
+        word.length > 3 && trimmedSegment.includes(word)
+      );
       
-      if (itemIndex > 0) {
-        const prevWord = words[itemIndex - 1];
-        if (quantityMap[prevWord]) {
-          quantity = quantityMap[prevWord];
+      if (isExactMatch || isPartialMatch) {
+        let quantity = 1; // default quantity
+        
+        // Look for quantity words in the segment
+        const words = trimmedSegment.split(' ');
+        for (let i = 0; i < words.length; i++) {
+          if (quantityMap[words[i]]) {
+            quantity = quantityMap[words[i]];
+            break;
+          }
+        }
+        
+        // Check if item already found (avoid duplicates)
+        const existingItem = foundItems.find(found => found.item.id === item.id);
+        if (!existingItem) {
+          foundItems.push({ item, quantity });
         }
       }
-      
-      foundItems.push({ item, quantity });
-    }
+    });
   });
   
   return foundItems;

@@ -1,14 +1,22 @@
 /**
  * VoiceAssistant Component for Voice Kiosk
- * Handles voice input simulation, transcript display, and voice commands
- * Provides microphone button and real-time transcript feedback
+ * Handles real speech-to-text input, transcript display, and voice commands
+ * Uses Web Speech API for actual voice recognition
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Mic, MicOff } from 'lucide-react';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { VoiceState } from '../types';
+
+// Extend Window interface for speech recognition
+declare global {
+  interface Window {
+    SpeechRecognition: any;
+    webkitSpeechRecognition: any;
+  }
+}
 
 interface VoiceAssistantProps {
   voiceState: VoiceState;
@@ -23,47 +31,114 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
   onVoiceToggle,
   onTranscriptChange
 }) => {
-  // Simulated voice transcript for demo purposes
-  const [simulatedTranscript, setSimulatedTranscript] = useState('');
+  const recognitionRef = useRef<any>(null);
+  const [isSupported, setIsSupported] = useState(false);
   
-  // Demo phrases that will be "heard" when recording starts
-  const demoTranscripts = [
-    "I want one Paneer Tikka",
-    "Add two Masala Dosa to my order",
-    "I'll have Butter Chicken and Veg Biryani",
-    "Give me three Samosa please",
-    "I want Chole Bhature and Mango Lassi"
-  ];
-
   /**
-   * Simulates voice input by gradually typing out a demo transcript
-   * This mimics real-time speech-to-text conversion
+   * Initialize speech recognition on component mount
+   * Sets up continuous listening and interim results
    */
   useEffect(() => {
-    if (voiceState === 'listening') {
-      // Select random demo transcript
-      const randomTranscript = demoTranscripts[Math.floor(Math.random() * demoTranscripts.length)];
-      let currentIndex = 0;
-      setSimulatedTranscript('');
-
-      // Simulate typing effect for voice transcript
-      const typingInterval = setInterval(() => {
-        if (currentIndex < randomTranscript.length) {
-          const newTranscript = randomTranscript.substring(0, currentIndex + 1);
-          setSimulatedTranscript(newTranscript);
-          onTranscriptChange(newTranscript);
-          currentIndex++;
-        } else {
-          clearInterval(typingInterval);
+    // Check if browser supports speech recognition
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    
+    if (SpeechRecognition) {
+      setIsSupported(true);
+      const recognition = new SpeechRecognition();
+      
+      // Configure speech recognition settings
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+      
+      // Handle speech recognition results
+      recognition.onresult = (event) => {
+        let finalTranscript = '';
+        let interimTranscript = '';
+        
+        // Process all speech results
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript;
+          } else {
+            interimTranscript += transcript;
+          }
         }
-      }, 100); // Type one character every 100ms
-
-      return () => clearInterval(typingInterval);
+        
+        // Update transcript with current speech
+        const fullTranscript = finalTranscript || interimTranscript;
+        onTranscriptChange(fullTranscript);
+      };
+      
+      // Handle speech recognition errors
+      recognition.onerror = (event) => {
+        console.error('Speech recognition error:', event.error);
+      };
+      
+      // Handle speech recognition end
+      recognition.onend = () => {
+        // Auto-restart if still in listening mode
+        if (voiceState === 'listening') {
+          setTimeout(() => {
+            try {
+              recognition.start();
+            } catch (error) {
+              console.error('Failed to restart recognition:', error);
+            }
+          }, 100);
+        }
+      };
+      
+      recognitionRef.current = recognition;
     } else {
-      // Clear transcript when not listening
-      setSimulatedTranscript('');
+      setIsSupported(false);
+      console.warn('Speech recognition not supported in this browser');
     }
-  }, [voiceState, onTranscriptChange]);
+    
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+    };
+  }, [voiceState]);
+  
+  /**
+   * Start or stop speech recognition based on voice state
+   */
+  useEffect(() => {
+    if (!recognitionRef.current) return;
+    
+    if (voiceState === 'listening') {
+      try {
+        recognitionRef.current.start();
+      } catch (error) {
+        console.error('Failed to start recognition:', error);
+      }
+    } else {
+      recognitionRef.current.stop();
+    }
+  }, [voiceState]);
+  
+  // Show unsupported message if speech recognition is not available
+  if (!isSupported) {
+    return (
+      <Card className="h-full bg-card border-border">
+        <CardHeader>
+          <CardTitle className="text-foreground">Voice Ordering Assistant</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="text-center">
+            <p className="text-muted-foreground">
+              Speech recognition is not supported in this browser. 
+              Please use Chrome or Edge for voice functionality.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card className="h-full bg-card border-border">
@@ -75,7 +150,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
         {/* Instructions */}
         <div className="text-center">
           <p className="text-muted-foreground mb-4">
-            {voiceState === 'idle' ? "Say 'Hey/Hello/Hi' to begin" : "Listening for your order..."}
+            {voiceState === 'idle' ? "Click microphone and speak your order" : "Listening for your order..."}
           </p>
           
           {/* Microphone Button */}
@@ -104,12 +179,12 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
         <div className="bg-muted p-4 rounded-lg min-h-[100px]">
           <p className="text-sm text-muted-foreground mb-2">Heard:</p>
           <div className="bg-background p-3 rounded border min-h-[60px]">
-            {voiceState === 'listening' && simulatedTranscript ? (
-              <p className="text-foreground">{simulatedTranscript}</p>
-            ) : voiceState === 'idle' ? (
-              <p className="text-muted-foreground italic">Waiting for voice input...</p>
+            {transcript ? (
+              <p className="text-foreground">{transcript}</p>
             ) : (
-              <p className="text-foreground">{transcript || 'Processing...'}</p>
+              <p className="text-muted-foreground italic">
+                {voiceState === 'listening' ? 'Listening...' : 'Waiting for voice input...'}
+              </p>
             )}
           </div>
         </div>
@@ -117,9 +192,8 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
         {/* Voice Commands Help */}
         <div className="text-xs text-muted-foreground space-y-1">
           <p><strong>Voice Commands:</strong></p>
-          <p>• "I want [item name]" - Add items to cart</p>
+          <p>• Just say item names: "Paneer Tikka", "two Masala Dosa"</p>
           <p>• "Go to cart" - View your order</p>
-          <p>• "Delete" - Clear transcript</p>
           <p>• "Menu" - Return to menu</p>
         </div>
       </CardContent>
