@@ -31,10 +31,6 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
   const [isListening, setIsListening] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   
-  /**
-   * Initialize continuous speech recognition on component mount
-   * Always listening for "start recording" and "stop recording" commands
-   */
   useEffect(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     
@@ -67,12 +63,14 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
         
         // Check for trigger commands
         if (currentText.includes('start recording') && !isRecording) {
+          console.log('Detected: start recording');
           setIsRecording(true);
           onTranscriptChange(''); // Clear previous transcript
           return;
         }
         
         if (currentText.includes('stop recording') && isRecording) {
+          console.log('Detected: stop recording');
           setIsRecording(false);
           // Process final transcript when stopping
           if (onVoiceCommand) {
@@ -84,14 +82,17 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
         // Check for immediate voice commands even when not recording
         if (!isRecording && onVoiceCommand) {
           if (currentText.includes('go to cart')) {
+            console.log('Detected: go to cart');
             onVoiceCommand('go_to_cart');
             return;
           }
           if (currentText.includes('cancel order') || currentText.includes('clear cart')) {
+            console.log('Detected: cancel order');
             onVoiceCommand('cancel_order');
             return;
           }
           if (currentText.includes('add more') || currentText.includes('back to menu')) {
+            console.log('Detected: add more');
             onVoiceCommand('add_more');
             return;
           }
@@ -111,35 +112,63 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
         }
       };
       
-      // Handle speech recognition errors
+      // Handle speech recognition errors - be more selective about restarting
       recognition.onerror = (event) => {
         console.error('Speech recognition error:', event.error);
+        
+        // Only restart for certain types of errors
         if (event.error === 'not-allowed') {
           setIsSupported(false);
+          setIsListening(false);
+        } else if (event.error === 'no-speech' || event.error === 'audio-capture') {
+          // These are normal, don't restart immediately
+          console.log('Speech recognition paused due to:', event.error);
+        } else if (event.error === 'aborted') {
+          // Don't restart on abort - this usually means we stopped it intentionally
+          console.log('Speech recognition aborted');
         }
       };
       
-      // Auto-restart recognition if it stops
+      // Restart recognition when it ends naturally (not on abort)
       recognition.onend = () => {
+        console.log('Speech recognition ended, attempting restart...');
         if (isListening) {
+          // Add a longer delay to prevent rapid restarts
           setTimeout(() => {
             try {
-              recognition.start();
+              if (recognitionRef.current && isListening) {
+                recognition.start();
+              }
             } catch (error) {
               console.error('Failed to restart recognition:', error);
+              // If restart fails multiple times, wait longer
+              setTimeout(() => {
+                if (recognitionRef.current && isListening) {
+                  try {
+                    recognition.start();
+                  } catch (e) {
+                    console.error('Final restart attempt failed:', e);
+                  }
+                }
+              }, 2000);
             }
-          }, 100);
+          }, 500);
         }
+      };
+      
+      recognition.onstart = () => {
+        console.log('Speech recognition started successfully');
       };
       
       recognitionRef.current = recognition;
       
-      // Start listening immediately
+      // Start listening immediately with error handling
       setIsListening(true);
       try {
         recognition.start();
       } catch (error) {
         console.error('Failed to start initial recognition:', error);
+        setIsSupported(false);
       }
     } else {
       setIsSupported(false);
@@ -147,12 +176,18 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
     }
     
     return () => {
+      console.log('Cleaning up speech recognition...');
       if (recognitionRef.current) {
         setIsListening(false);
-        recognitionRef.current.stop();
+        try {
+          recognitionRef.current.stop();
+        } catch (error) {
+          console.error('Error stopping recognition:', error);
+        }
+        recognitionRef.current = null;
       }
     };
-  }, [isRecording, isListening, onTranscriptChange]);
+  }, []); // Removed dependencies to prevent restart loops
   
   // Show unsupported message if speech recognition is not available
   if (!isSupported) {
