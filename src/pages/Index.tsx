@@ -23,8 +23,24 @@ const Index = () => {
     }
   };
 
-  const processTranscript = () => {
-    const foundItems = parseVoiceTranscript(transcript, mockFoodItems);
+  // Process transcript when it changes (for automatic processing)
+  const handleTranscriptChange = (newTranscript: string) => {
+    setTranscript(newTranscript);
+    
+    // Auto-process if transcript has content and ends with a pause
+    if (newTranscript.trim()) {
+      // Debounce processing to avoid constant updates
+      const timeoutId = setTimeout(() => {
+        processTranscript(newTranscript);
+      }, 1000);
+      
+      return () => clearTimeout(timeoutId);
+    }
+  };
+
+  const processTranscript = (transcriptToProcess?: string) => {
+    const textToProcess = transcriptToProcess || transcript;
+    const foundItems = parseVoiceTranscript(textToProcess, mockFoodItems);
     const newCartItems = [...cartItems];
     
     foundItems.forEach(({ item, quantity }) => {
@@ -78,10 +94,8 @@ const Index = () => {
           
           <div className="space-y-4">
             <VoiceAssistant
-              voiceState={voiceState}
               transcript={transcript}
-              onVoiceToggle={handleVoiceToggle}
-              onTranscriptChange={setTranscript}
+              onTranscriptChange={handleTranscriptChange}
             />
             
             {currentView === 'menu' && (

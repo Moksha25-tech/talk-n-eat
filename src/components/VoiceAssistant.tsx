@@ -1,14 +1,11 @@
 /**
  * VoiceAssistant Component for Voice Kiosk
- * Handles real speech-to-text input, transcript display, and voice commands
- * Uses Web Speech API for actual voice recognition
+ * Automatically detects "start recording" and "stop recording" commands
+ * Uses Web Speech API for hands-free voice recognition
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff } from 'lucide-react';
-import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
-import { VoiceState } from '../types';
 
 // Extend Window interface for speech recognition
 declare global {
@@ -19,34 +16,31 @@ declare global {
 }
 
 interface VoiceAssistantProps {
-  voiceState: VoiceState;
   transcript: string;
-  onVoiceToggle: () => void;
   onTranscriptChange: (transcript: string) => void;
 }
 
 export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
-  voiceState,
   transcript,
-  onVoiceToggle,
   onTranscriptChange
 }) => {
   const recognitionRef = useRef<any>(null);
   const [isSupported, setIsSupported] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
   
   /**
-   * Initialize speech recognition on component mount
-   * Sets up continuous listening and interim results
+   * Initialize continuous speech recognition on component mount
+   * Always listening for "start recording" and "stop recording" commands
    */
   useEffect(() => {
-    // Check if browser supports speech recognition
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     
     if (SpeechRecognition) {
       setIsSupported(true);
       const recognition = new SpeechRecognition();
       
-      // Configure speech recognition settings
+      // Configure for continuous listening
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = 'en-US';
@@ -58,29 +52,54 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
         
         // Process all speech results
         for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
+          const transcriptText = event.results[i][0].transcript.toLowerCase().trim();
           
           if (event.results[i].isFinal) {
-            finalTranscript += transcript;
+            finalTranscript += transcriptText;
           } else {
-            interimTranscript += transcript;
+            interimTranscript += transcriptText;
           }
         }
         
-        // Update transcript with current speech
-        const fullTranscript = finalTranscript || interimTranscript;
-        onTranscriptChange(fullTranscript);
+        const currentText = (finalTranscript || interimTranscript).toLowerCase();
+        
+        // Check for trigger commands
+        if (currentText.includes('start recording') && !isRecording) {
+          setIsRecording(true);
+          onTranscriptChange(''); // Clear previous transcript
+          return;
+        }
+        
+        if (currentText.includes('stop recording') && isRecording) {
+          setIsRecording(false);
+          return;
+        }
+        
+        // Only update transcript when actively recording
+        if (isRecording) {
+          // Remove the command words from the transcript
+          const cleanTranscript = (finalTranscript || interimTranscript)
+            .replace(/start recording/gi, '')
+            .replace(/stop recording/gi, '')
+            .trim();
+          
+          if (cleanTranscript) {
+            onTranscriptChange(cleanTranscript);
+          }
+        }
       };
       
       // Handle speech recognition errors
       recognition.onerror = (event) => {
         console.error('Speech recognition error:', event.error);
+        if (event.error === 'not-allowed') {
+          setIsSupported(false);
+        }
       };
       
-      // Handle speech recognition end
+      // Auto-restart recognition if it stops
       recognition.onend = () => {
-        // Auto-restart if still in listening mode
-        if (voiceState === 'listening') {
+        if (isListening) {
           setTimeout(() => {
             try {
               recognition.start();
@@ -92,6 +111,14 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
       };
       
       recognitionRef.current = recognition;
+      
+      // Start listening immediately
+      setIsListening(true);
+      try {
+        recognition.start();
+      } catch (error) {
+        console.error('Failed to start initial recognition:', error);
+      }
     } else {
       setIsSupported(false);
       console.warn('Speech recognition not supported in this browser');
@@ -99,27 +126,11 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
     
     return () => {
       if (recognitionRef.current) {
+        setIsListening(false);
         recognitionRef.current.stop();
       }
     };
-  }, [voiceState]);
-  
-  /**
-   * Start or stop speech recognition based on voice state
-   */
-  useEffect(() => {
-    if (!recognitionRef.current) return;
-    
-    if (voiceState === 'listening') {
-      try {
-        recognitionRef.current.start();
-      } catch (error) {
-        console.error('Failed to start recognition:', error);
-      }
-    } else {
-      recognitionRef.current.stop();
-    }
-  }, [voiceState]);
+  }, [isRecording, isListening, onTranscriptChange]);
   
   // Show unsupported message if speech recognition is not available
   if (!isSupported) {
@@ -150,40 +161,39 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
         {/* Instructions */}
         <div className="text-center">
           <p className="text-muted-foreground mb-4">
-            {voiceState === 'idle' ? "Click microphone and speak your order" : "Listening for your order..."}
+            Say "start recording" to begin, "stop recording" to finish
           </p>
-          
-          {/* Microphone Button */}
-          <Button
-            onClick={onVoiceToggle}
-            size="lg"
-            variant={voiceState === 'listening' ? 'destructive' : 'default'}
-            className="w-16 h-16 rounded-full mb-4"
-          >
-            {voiceState === 'listening' ? (
-              <MicOff className="h-8 w-8 animate-pulse" />
-            ) : (
-              <Mic className="h-8 w-8" />
-            )}
-          </Button>
         </div>
 
         {/* Voice Status */}
         <div className="text-center">
-          <p className="text-sm text-muted-foreground mb-2">
-            Status: {voiceState === 'listening' ? 'Recording...' : 'Ready to listen'}
-          </p>
+          <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-sm ${
+            isRecording 
+              ? 'bg-red-100 text-red-700 dark:bg-red-900/20 dark:text-red-400' 
+              : isListening 
+                ? 'bg-green-100 text-green-700 dark:bg-green-900/20 dark:text-green-400'
+                : 'bg-muted text-muted-foreground'
+          }`}>
+            <div className={`w-2 h-2 rounded-full ${
+              isRecording 
+                ? 'bg-red-500 animate-pulse' 
+                : isListening 
+                  ? 'bg-green-500'
+                  : 'bg-muted-foreground'
+            }`} />
+            {isRecording ? 'Recording...' : isListening ? 'Listening for commands...' : 'Not listening'}
+          </div>
         </div>
 
         {/* Transcript Display */}
         <div className="bg-muted p-4 rounded-lg min-h-[100px]">
-          <p className="text-sm text-muted-foreground mb-2">Heard:</p>
+          <p className="text-sm text-muted-foreground mb-2">Transcript:</p>
           <div className="bg-background p-3 rounded border min-h-[60px]">
             {transcript ? (
               <p className="text-foreground">{transcript}</p>
             ) : (
               <p className="text-muted-foreground italic">
-                {voiceState === 'listening' ? 'Listening...' : 'Waiting for voice input...'}
+                {isRecording ? 'Speak your order...' : 'Say "start recording" to begin'}
               </p>
             )}
           </div>
@@ -192,9 +202,9 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
         {/* Voice Commands Help */}
         <div className="text-xs text-muted-foreground space-y-1">
           <p><strong>Voice Commands:</strong></p>
+          <p>• "start recording" - Begin voice input</p>
+          <p>• "stop recording" - End voice input</p>
           <p>• Just say item names: "Paneer Tikka", "two Masala Dosa"</p>
-          <p>• "Go to cart" - View your order</p>
-          <p>• "Menu" - Return to menu</p>
         </div>
       </CardContent>
     </Card>
