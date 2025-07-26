@@ -18,11 +18,13 @@ declare global {
 interface VoiceAssistantProps {
   transcript: string;
   onTranscriptChange: (transcript: string) => void;
+  onVoiceCommand?: (command: string, data?: any) => void;
 }
 
 export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
   transcript,
-  onTranscriptChange
+  onTranscriptChange,
+  onVoiceCommand
 }) => {
   const recognitionRef = useRef<any>(null);
   const [isSupported, setIsSupported] = useState(false);
@@ -72,7 +74,27 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({
         
         if (currentText.includes('stop recording') && isRecording) {
           setIsRecording(false);
+          // Process final transcript when stopping
+          if (onVoiceCommand) {
+            onVoiceCommand('process_transcript', transcript);
+          }
           return;
+        }
+        
+        // Check for immediate voice commands even when not recording
+        if (!isRecording && onVoiceCommand) {
+          if (currentText.includes('go to cart')) {
+            onVoiceCommand('go_to_cart');
+            return;
+          }
+          if (currentText.includes('cancel order') || currentText.includes('clear cart')) {
+            onVoiceCommand('cancel_order');
+            return;
+          }
+          if (currentText.includes('add more') || currentText.includes('back to menu')) {
+            onVoiceCommand('add_more');
+            return;
+          }
         }
         
         // Only update transcript when actively recording
