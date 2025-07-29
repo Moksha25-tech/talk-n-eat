@@ -120,67 +120,94 @@ export const categories = [
 ];
 
 /**
- * Enhanced Natural Language Processing function
- * Extracts food item names from voice transcript without requiring "I want"
- * @param transcript - The voice input text to parse
- * @param foodItems - Array of available food items to match against
- * @returns Array of matched food items with quantities
+ * Parse voice transcript to extract food items, quantities, and commands
+ * Handles various ways users might say quantities and item names
+ * Also processes cart operations and navigation commands
+ * @param transcript - The voice transcript to parse
+ * @param foodItems - Array of available food items
+ * @returns Object with items, commands, and operations
  */
 export const parseVoiceTranscript = (transcript: string, foodItems: FoodItem[]) => {
   const foundItems: { item: FoodItem; quantity: number }[] = [];
-  const lowerTranscript = transcript.toLowerCase().trim();
+  const removeItems: { item: FoodItem; quantity: number }[] = [];
+  const lowerTranscript = transcript.toLowerCase();
   
-  // Enhanced keywords for quantity detection
-  const quantityMap: { [key: string]: number } = {
-    'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
-    'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
-    '1': 1, '2': 2, '3': 3, '4': 4, '5': 5,
-    '6': 6, '7': 7, '8': 8, '9': 9, '10': 10,
-    'a': 1, 'an': 1, 'single': 1, 'double': 2, 'triple': 3
+  // Check for cart and navigation commands
+  const commands = {
+    goToCart: lowerTranscript.includes('go to cart') || lowerTranscript.includes('show cart') || lowerTranscript.includes('view cart'),
+    cancelOrder: lowerTranscript.includes('cancel order') || lowerTranscript.includes('clear cart') || lowerTranscript.includes('reset order'),
+    addMore: lowerTranscript.includes('add more') || lowerTranscript.includes('go back') || lowerTranscript.includes('back to menu'),
+    placeOrder: lowerTranscript.includes('place order') || lowerTranscript.includes('confirm order') || lowerTranscript.includes('checkout')
   };
   
-  // Remove common prefixes that users might say
-  const cleanedTranscript = lowerTranscript
-    .replace(/^(i want|i need|i would like|give me|i'll have|can i get|let me have)\s*/i, '')
-    .replace(/\s+(please|thanks|thank you)$/i, '');
+  // Common quantity words mapping
+  const quantityWords: { [key: string]: number } = {
+    'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+    'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
+    'a': 1, 'an': 1, 'single': 1, 'double': 2, 'triple': 3,
+    'half': 0.5, 'dozen': 12, 'couple': 2, 'few': 3
+  };
   
-  // Split by common separators
-  const segments = cleanedTranscript.split(/\s+and\s+|\s*,\s*|\s+also\s+/);
-  
-  segments.forEach(segment => {
-    const trimmedSegment = segment.trim();
+  // For each food item, check if it's mentioned in the transcript
+  foodItems.forEach(item => {
+    const itemName = item.name.toLowerCase();
     
-    // Search for each food item in the segment
-    foodItems.forEach(item => {
-      const itemName = item.name.toLowerCase();
-      const itemWords = itemName.split(' ');
-      
-      // Check if item name appears in segment (exact match or partial match)
-      const isExactMatch = trimmedSegment.includes(itemName);
-      const isPartialMatch = itemWords.some(word => 
-        word.length > 3 && trimmedSegment.includes(word)
-      );
-      
-      if (isExactMatch || isPartialMatch) {
-        let quantity = 1; // default quantity
-        
-        // Look for quantity words in the segment
-        const words = trimmedSegment.split(' ');
-        for (let i = 0; i < words.length; i++) {
-          if (quantityMap[words[i]]) {
-            quantity = quantityMap[words[i]];
+    // Check for remove operations first
+    const removePattern = new RegExp(`remove\\s+(\\d+|${Object.keys(quantityWords).join('|')})\\s+${itemName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'gi');
+    const removeMatch = lowerTranscript.match(removePattern);
+    
+    if (removeMatch) {
+      let quantity = 1;
+      const quantityMatch = removeMatch[0].match(/\d+/);
+      if (quantityMatch) {
+        quantity = parseInt(quantityMatch[0]);
+      } else {
+        // Check for quantity words
+        for (const [word, num] of Object.entries(quantityWords)) {
+          if (removeMatch[0].includes(word)) {
+            quantity = num;
             break;
           }
         }
+      }
+      removeItems.push({ item, quantity });
+      return; // Don't process as add if it's a remove command
+    }
+    
+    // Check if item name is mentioned for adding
+    if (lowerTranscript.includes(itemName)) {
+      let quantity = 1; // default quantity
+      
+      // Look for explicit numbers before the item name
+      const numberRegex = new RegExp(`(\\d+)\\s+${itemName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'gi');
+      const numberMatch = lowerTranscript.match(numberRegex);
+      
+      if (numberMatch) {
+        const numStr = numberMatch[0].match(/\d+/);
+        if (numStr) {
+          quantity = parseInt(numStr[0]);
+        }
+      } else {
+        // Look for quantity words before the item name
+        const wordsBeforeItem = lowerTranscript.split(itemName)[0].split(' ');
+        const lastWords = wordsBeforeItem.slice(-3); // Check last 3 words before item
         
-        // Check if item already found (avoid duplicates)
-        const existingItem = foundItems.find(found => found.item.id === item.id);
-        if (!existingItem) {
-          foundItems.push({ item, quantity });
+        for (const word of lastWords.reverse()) {
+          const cleanWord = word.trim().replace(/[^\w]/g, '');
+          if (quantityWords[cleanWord]) {
+            quantity = quantityWords[cleanWord];
+            break;
+          }
         }
       }
-    });
+      
+      foundItems.push({ item, quantity });
+    }
   });
   
-  return foundItems;
+  return {
+    addItems: foundItems,
+    removeItems,
+    commands
+  };
 };

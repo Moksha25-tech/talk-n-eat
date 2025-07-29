@@ -23,11 +23,28 @@ const Index = () => {
     }
   };
 
-  const processTranscript = () => {
-    const foundItems = parseVoiceTranscript(transcript, mockFoodItems);
+  // Process transcript when it changes (for automatic processing)
+  const handleTranscriptChange = (newTranscript: string) => {
+    setTranscript(newTranscript);
+    
+    // Auto-process if transcript has content and ends with a pause
+    if (newTranscript.trim()) {
+      // Debounce processing to avoid constant updates
+      const timeoutId = setTimeout(() => {
+        processTranscript(newTranscript);
+      }, 1000);
+      
+      return () => clearTimeout(timeoutId);
+    }
+  };
+
+  const processTranscript = (transcriptToProcess?: string) => {
+    const textToProcess = transcriptToProcess || transcript;
+    const result = parseVoiceTranscript(textToProcess, mockFoodItems);
     const newCartItems = [...cartItems];
     
-    foundItems.forEach(({ item, quantity }) => {
+    // Process add items
+    result.addItems.forEach(({ item, quantity }) => {
       const existingIndex = newCartItems.findIndex(cartItem => cartItem.id === item.id);
       if (existingIndex >= 0) {
         newCartItems[existingIndex].quantity += quantity;
@@ -36,8 +53,47 @@ const Index = () => {
       }
     });
     
+    // Process remove items
+    result.removeItems.forEach(({ item, quantity }) => {
+      const existingIndex = newCartItems.findIndex(cartItem => cartItem.id === item.id);
+      if (existingIndex >= 0) {
+        newCartItems[existingIndex].quantity = Math.max(0, newCartItems[existingIndex].quantity - quantity);
+        if (newCartItems[existingIndex].quantity === 0) {
+          newCartItems.splice(existingIndex, 1);
+        }
+      }
+    });
+    
+    // Process commands
+    if (result.commands.goToCart) {
+      setCurrentView('cart');
+    }
+    if (result.commands.cancelOrder) {
+      setCartItems([]);
+    }
+    if (result.commands.addMore) {
+      setCurrentView('menu');
+    }
+    
     setCartItems(newCartItems);
     setTranscript('');
+  };
+
+  const handleVoiceCommand = (command: string, data?: any) => {
+    switch (command) {
+      case 'process_transcript':
+        processTranscript(data);
+        break;
+      case 'go_to_cart':
+        setCurrentView('cart');
+        break;
+      case 'cancel_order':
+        setCartItems([]);
+        break;
+      case 'add_more':
+        setCurrentView('menu');
+        break;
+    }
   };
 
   return (
@@ -78,10 +134,9 @@ const Index = () => {
           
           <div className="space-y-4">
             <VoiceAssistant
-              voiceState={voiceState}
               transcript={transcript}
-              onVoiceToggle={handleVoiceToggle}
-              onTranscriptChange={setTranscript}
+              onTranscriptChange={handleTranscriptChange}
+              onVoiceCommand={handleVoiceCommand}
             />
             
             {currentView === 'menu' && (
