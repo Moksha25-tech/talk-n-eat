@@ -26,23 +26,22 @@ const Index = () => {
   // Process transcript when it changes (for automatic processing)
   const handleTranscriptChange = (newTranscript: string) => {
     setTranscript(newTranscript);
-    
+
     // Auto-process if transcript has content and ends with a pause
     if (newTranscript.trim()) {
-      // Debounce processing to avoid constant updates
       const timeoutId = setTimeout(() => {
         processTranscript(newTranscript);
       }, 1000);
-      
+
       return () => clearTimeout(timeoutId);
     }
   };
 
-  const processTranscript = (transcriptToProcess?: string) => {
+  const processTranscript = (transcriptToProcess?: unknown) => {
     const textToProcess = transcriptToProcess || transcript;
     const result = parseVoiceTranscript(textToProcess, mockFoodItems);
     const newCartItems = [...cartItems];
-    
+
     // Process add items
     result.addItems.forEach(({ item, quantity }) => {
       const existingIndex = newCartItems.findIndex(cartItem => cartItem.id === item.id);
@@ -52,7 +51,7 @@ const Index = () => {
         newCartItems.push({ ...item, quantity });
       }
     });
-    
+
     // Process remove items
     result.removeItems.forEach(({ item, quantity }) => {
       const existingIndex = newCartItems.findIndex(cartItem => cartItem.id === item.id);
@@ -63,7 +62,7 @@ const Index = () => {
         }
       }
     });
-    
+
     // Process commands
     if (result.commands.goToCart) {
       setCurrentView('cart');
@@ -74,82 +73,83 @@ const Index = () => {
     if (result.commands.addMore) {
       setCurrentView('menu');
     }
-    
+
     setCartItems(newCartItems);
     setTranscript('');
   };
 
-  const handleVoiceCommand = (command: string, data?: any) => {
+  const handleVoiceCommand = (command: string, data?: unknown) => {
     switch (command) {
       case 'process_transcript':
         processTranscript(data);
         break;
-      case 'go_to_cart':
+      case 'goToCart':
         setCurrentView('cart');
         break;
-      case 'cancel_order':
+      case 'cancelOrder':
         setCartItems([]);
         break;
-      case 'add_more':
+      case 'addMore':
         setCurrentView('menu');
+        break;
+      default:
         break;
     }
   };
 
   return (
-    <div className="min-h-screen bg-background">
-      <Sidebar 
-        currentView={currentView}
-        voiceState={voiceState}
-        onViewChange={setCurrentView}
-        onVoiceToggle={handleVoiceToggle}
-      />
-      
-      <div className="ml-16 p-4">
-        <div className="mb-4">
-          <Select defaultValue="all">
-            <SelectTrigger className="w-48">
-              <SelectValue placeholder="All Categories" />
-            </SelectTrigger>
-            <SelectContent>
-              {categories.map(cat => (
-                <SelectItem key={cat} value={cat.toLowerCase()}>{cat}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+      <div className="min-h-screen bg-background">
+        <Sidebar
+            currentView={currentView}
+            voiceState={voiceState}
+            onViewChange={setCurrentView}
+            onVoiceToggle={handleVoiceToggle}
+        />
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2">
-            {currentView === 'menu' ? (
-              <MenuGrid foodItems={mockFoodItems} />
-            ) : (
-              <Cart 
-                cartItems={cartItems}
-                onResetOrder={() => setCartItems([])}
-                onAddItems={() => setCurrentView('menu')}
-              />
-            )}
+        <div className="ml-16 p-4">
+          <div className="mb-4">
+            <Select defaultValue="all">
+              <SelectTrigger className="w-48">
+                <SelectValue placeholder="All Categories" />
+              </SelectTrigger>
+              <SelectContent>
+                {categories.map(cat => (
+                    <SelectItem key={cat} value={cat.toLowerCase()}>{cat}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
-          
-          <div className="space-y-4">
-            <VoiceAssistant
-              transcript={transcript}
-              onTranscriptChange={handleTranscriptChange}
-              onVoiceCommand={handleVoiceCommand}
-            />
-            
-            {currentView === 'menu' && (
-              <Cart 
-                cartItems={cartItems}
-                onResetOrder={() => setCartItems([])}
-                onAddItems={() => setCurrentView('menu')}
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2">
+              {currentView === 'menu' ? (
+                  <MenuGrid foodItems={mockFoodItems} />
+              ) : (
+                  <Cart
+                      cartItems={cartItems}
+                      onResetOrder={() => setCartItems([])}
+                      onAddItems={() => setCurrentView('menu')}
+                  />
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <VoiceAssistant
+                  menuItems={mockFoodItems}
+                  onCartUpdate={setCartItems}
               />
-            )}
+
+              {currentView === 'menu' && (
+                  <Cart
+                      cartItems={cartItems}
+                      onResetOrder={() => setCartItems([])}
+                      onAddItems={() => setCurrentView('menu')}
+                  />
+              )}
+            </div>
           </div>
         </div>
       </div>
-    </div>
   );
 };
 

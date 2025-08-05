@@ -127,7 +127,7 @@ export const categories = [
  * @param foodItems - Array of available food items
  * @returns Object with items, commands, and operations
  */
-export const parseVoiceTranscript = (transcript: string, foodItems: FoodItem[]) => {
+export const parseVoiceTranscript = (transcript: unknown, foodItems: FoodItem[]) => {
   const foundItems: { item: FoodItem; quantity: number }[] = [];
   const removeItems: { item: FoodItem; quantity: number }[] = [];
   const lowerTranscript = transcript.toLowerCase();
