@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Plus, RotateCcw, ShoppingCart } from 'lucide-react';
 import { Cart } from './Cart';
 import { CartItem, FoodItem } from '../types';
+import Fuse from 'fuse.js';
 
 // Define command types
 type CommandAction =
@@ -24,8 +25,6 @@ interface VoiceAssistantProps {
 
 /**
  * Generate a mapping of number words to their numeric values
- * @param maxNumber The maximum number to generate words for (default: 50)
- * @returns A record mapping number words to their numeric values
  */
 const generateNumberWords = (maxNumber: number = 50): Record<string, number> => {
     const units = [
@@ -33,11 +32,9 @@ const generateNumberWords = (maxNumber: number = 50): Record<string, number> => 
         'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen',
         'seventeen', 'eighteen', 'nineteen'
     ];
-
     const tens = [
         '', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'
     ];
-
     const numberWords: Record<string, number> = {};
 
     // Add numbers 0-19
@@ -49,7 +46,6 @@ const generateNumberWords = (maxNumber: number = 50): Record<string, number> => 
     for (let i = 20; i <= maxNumber; i++) {
         const ten = Math.floor(i / 10);
         const unit = i % 10;
-
         if (unit === 0) {
             // Exact tens (twenty, thirty, etc.)
             numberWords[tens[ten]] = i;
@@ -57,7 +53,6 @@ const generateNumberWords = (maxNumber: number = 50): Record<string, number> => 
             // Hyphenated numbers (twenty-one, thirty-two, etc.)
             const hyphenated = `${tens[ten]}-${units[unit]}`;
             numberWords[hyphenated] = i;
-
             // Also add with space for speech recognition variations
             const spaced = `${tens[ten]} ${units[unit]}`;
             numberWords[spaced] = i;
@@ -72,8 +67,6 @@ const numberWordsMapping = generateNumberWords(50);
 
 /**
  * Convert number words to digits
- * @param word The number word to convert (e.g., "one", "two", "nineteen")
- * @returns The corresponding number or undefined if not found
  */
 const wordToNumber = (word: string): number | undefined => {
     return numberWordsMapping[word.toLowerCase()];
@@ -81,8 +74,6 @@ const wordToNumber = (word: string): number | undefined => {
 
 /**
  * Convert quantity text to a number
- * @param quantityText The quantity text (could be a number string or a number word)
- * @returns The corresponding number or undefined if not found
  */
 const parseQuantity = (quantityText: string): number | undefined => {
     // First try to parse as a number
@@ -96,10 +87,155 @@ const parseQuantity = (quantityText: string): number | undefined => {
 };
 
 /**
- * Parse the transcript to identify and execute commands
- * Completely revised to handle natural language commands properly
+ * Create a Fuse instance for fuzzy matching item names
  */
-const parseCommand = (transcript: string): CommandAction[] => {
+const createFuseInstance = (menuItems: FoodItem[]): Fuse<FoodItem> => {
+    const options = {
+        includeScore: true,
+        threshold: 0.4, // Adjust for more/less strictness
+        keys: ['name']
+    };
+
+    return new Fuse(menuItems, options);
+};
+
+/**
+ * Extract quantity-item pairs and commands from a complex transcript
+ */
+const extractItemsAndCommands = (transcript: string): {
+    items: Array<{quantity: number, item: string}>,
+    commands: string[]
+} => {
+    const items: Array<{quantity: number, item: string}> = [];
+    const commands: string[] = [];
+
+    // Define command phrases to look for
+    const commandPhrases = [
+        "start recording", "begin recording", "start listening",
+        "stop recording", "end recording", "stop listening",
+        "go to cart", "show cart", "view cart", "see my cart",
+        "add more", "back to menu", "continue shopping", "add items", "order more", "more items", "continue ordering",
+        "reset", "clear cart", "empty cart", "start over"
+    ];
+
+    // Make a copy of the transcript for processing
+    let processedTranscript = transcript.toLowerCase();
+
+    // Extract commands found in the transcript
+    for (const phrase of commandPhrases) {
+        if (processedTranscript.includes(phrase)) {
+            commands.push(phrase);
+            // Remove the phrase from the transcript to avoid confusion
+            processedTranscript = processedTranscript.replace(new RegExp(phrase, 'gi'), ' ');
+        }
+    }
+
+    // Define stop words to remove from item names
+    const stopWords = new Set([
+        "for", "and", "with", "the", "a", "an", "of", "in", "on", "at", "by", "from",
+        "up", "down", "over", "under", "again", "further", "then", "here", "there",
+        "when", "where", "why", "how", "what", "which", "who", "whom", "whose",
+        "this", "that", "these", "those", "am", "is", "are", "was", "were", "be",
+        "been", "being", "have", "has", "had", "do", "does", "did", "will", "would",
+        "shall", "should", "may", "might", "must", "can", "could", "i", "you", "he",
+        "she", "it", "we", "they", "me", "him", "her", "us", "them", "my", "your",
+        "his", "its", "our", "their", "mine", "yours", "hers", "ours", "theirs",
+        "to", "go", "cart", "add", "more", "back", "menu", "continue", "shopping",
+        "start", "recording", "stop", "finance", "tu" // Added specific words from the example
+    ]);
+
+    // Split the processed transcript into tokens
+    const tokens = processedTranscript.split(/\s+/).filter(token => token.trim() !== '');
+
+    let i = 0;
+    while (i < tokens.length) {
+        const token = tokens[i];
+        const quantity = parseQuantity(token);
+
+        if (quantity !== undefined) {
+            // Found a quantity, now collect the next tokens until the next quantity or stop word
+            const itemTokens = [];
+            let j = i + 1;
+            while (j < tokens.length) {
+                const nextToken = tokens[j];
+                // Check if nextToken is a quantity or a stop word
+                if (parseQuantity(nextToken) !== undefined || stopWords.has(nextToken.toLowerCase())) {
+                    break;
+                }
+                itemTokens.push(nextToken);
+                j++;
+            }
+
+            if (itemTokens.length > 0) {
+                const itemName = itemTokens.join(' ');
+                items.push({ quantity, item: itemName });
+                i = j; // Skip the tokens we've processed
+                continue;
+            }
+        }
+        i++;
+    }
+
+    return { items, commands };
+};
+
+/**
+ * Process multiple item commands from a transcript
+ */
+const processMultipleItemCommands = (
+    items: Array<{quantity: number, item: string}>,
+    menuItems: FoodItem[],
+    currentCart: CartItem[],
+    fuse: Fuse<FoodItem>
+): { updatedCart: CartItem[], statusMessages: string[] } => {
+    // Create a copy of the current cart to update
+    const updatedCart = [...currentCart];
+    const statusMessages: string[] = [];
+
+    // Process each item
+    for (const { quantity, item } of items) {
+        // Use fuzzy matching to find the menu item
+        const results = fuse.search(item, { limit: 1 });
+
+        if (results.length > 0) {
+            const menuItem = results[0].item;
+            const score = results[0].score || 1;
+
+            // Only proceed if we have a good match (lower score is better)
+            if (score < 0.5) {
+                // Check if the item is already in the cart
+                const existingItemIndex = updatedCart.findIndex(cartItem => cartItem.id === menuItem.id);
+
+                if (existingItemIndex >= 0) {
+                    // Update the quantity if item already exists
+                    updatedCart[existingItemIndex] = {
+                        ...updatedCart[existingItemIndex],
+                        quantity: updatedCart[existingItemIndex].quantity + quantity
+                    };
+                } else {
+                    // Add new item to cart
+                    updatedCart.push({
+                        ...menuItem,
+                        quantity
+                    });
+                }
+
+                statusMessages.push(`Added ${quantity} ${menuItem.name} to your cart.`);
+            } else {
+                statusMessages.push(`Item "${item}" not found in menu.`);
+            }
+        } else {
+            statusMessages.push(`Item "${item}" not found in menu.`);
+        }
+    }
+
+    return { updatedCart, statusMessages };
+};
+
+/**
+ * Parse the transcript to identify and execute commands
+ */
+const parseCommand = (transcript: string, fuse: Fuse<FoodItem>): CommandAction[] => {
     const normalizedText = transcript.toLowerCase().trim();
     const commands: CommandAction[] = [];
 
@@ -111,101 +247,75 @@ const parseCommand = (transcript: string): CommandAction[] => {
         if (!trimmedSentence) continue;
 
         // Check for recording control commands
-        if (trimmedSentence.includes('start recording')) {
+        if (trimmedSentence.includes('start recording') ||
+            trimmedSentence.includes('begin recording') ||
+            trimmedSentence.includes('start listening')) {
             commands.push({ type: 'START_RECORDING' });
             continue;
         }
 
-        if (trimmedSentence.includes('stop recording')) {
+        if (trimmedSentence.includes('stop recording') ||
+            trimmedSentence.includes('end recording') ||
+            trimmedSentence.includes('stop listening')) {
             commands.push({ type: 'STOP_RECORDING' });
             continue;
         }
 
         // Check for view navigation commands
-        if (trimmedSentence.includes('go to cart')) {
+        if (trimmedSentence.includes('go to cart') ||
+            trimmedSentence.includes('show cart') ||
+            trimmedSentence.includes('view cart') ||
+            trimmedSentence.includes('see my cart')) {
             commands.push({ type: 'VIEW_CART' });
             continue;
         }
 
-        if (trimmedSentence.includes('add more') || trimmedSentence.includes('back to menu')) {
+        // Enhanced "add more" command detection with more variations
+        if (trimmedSentence.includes('add more') ||
+            trimmedSentence.includes('back to menu') ||
+            trimmedSentence.includes('continue shopping') ||
+            trimmedSentence.includes('add items') ||
+            trimmedSentence.includes('order more') ||
+            trimmedSentence.includes('more items') ||
+            trimmedSentence.includes('continue ordering')) {
             commands.push({ type: 'BACK_TO_MENU' });
             continue;
         }
 
         // Check for cart management commands
-        if (trimmedSentence.includes('reset') || trimmedSentence.includes('clear cart')) {
+        if (trimmedSentence.includes('reset') ||
+            trimmedSentence.includes('clear cart') ||
+            trimmedSentence.includes('empty cart') ||
+            trimmedSentence.includes('start over')) {
             commands.push({ type: 'RESET_CART' });
             continue;
         }
 
-        // Check for remove command (with optional quantity)
-        if (trimmedSentence.includes('remove')) {
-            const removeMatch = trimmedSentence.match(/remove\s+(.+)$/);
-            if (removeMatch) {
-                const removeText = removeMatch[1].trim();
+        // Check for remove command patterns
+        // Pattern 1: "remove [quantity] [item]" - remove specific quantity
+        const removeWithQuantityPattern = /(?:remove|take away|delete)\s+(\d+|\w+)\s+(.+)$/i;
+        const removeWithQuantityMatch = trimmedSentence.match(removeWithQuantityPattern);
 
-                // Try to extract quantity from the beginning
-                const quantityMatch = removeText.match(/^(\d+|\w+)\s+(.+)$/);
-                if (quantityMatch) {
-                    const quantityText = quantityMatch[1];
-                    const itemName = quantityMatch[2].trim();
-                    const quantity = parseQuantity(quantityText);
-
-                    commands.push({ type: 'REMOVE_ITEM', item: itemName, quantity });
-                } else {
-                    // No quantity specified, remove all
-                    commands.push({ type: 'REMOVE_ITEM', item: removeText });
-                }
-                continue;
-            }
-        }
-
-        // Check for add command with explicit "add"
-        if (trimmedSentence.startsWith('add ')) {
-            const addMatch = trimmedSentence.match(/add\s+(.+)$/);
-            if (addMatch) {
-                const addText = addMatch[1].trim();
-
-                // Try to extract quantity from the beginning
-                const quantityMatch = addText.match(/^(\d+|\w+)\s+(.+)$/);
-                if (quantityMatch) {
-                    const quantityText = quantityMatch[1];
-                    const itemName = quantityMatch[2].trim();
-                    const quantity = parseQuantity(quantityText);
-
-                    if (quantity !== undefined) {
-                        commands.push({ type: 'ADD_ITEM', item: itemName, quantity });
-                    } else {
-                        commands.push({ type: 'ADD_ITEM', item: addText, quantity: 1 });
-                    }
-                } else {
-                    // No quantity specified, default to 1
-                    commands.push({ type: 'ADD_ITEM', item: addText, quantity: 1 });
-                }
-                continue;
-            }
-        }
-
-        // Check for item with quantity at the beginning (e.g., "one butter chicken")
-        const itemWithQuantityMatch = trimmedSentence.match(/^(\d+|\w+)\s+(.+)$/);
-        if (itemWithQuantityMatch) {
-            const quantityText = itemWithQuantityMatch[1];
-            const itemName = itemWithQuantityMatch[2].trim();
+        if (removeWithQuantityMatch) {
+            const quantityText = removeWithQuantityMatch[1];
+            const itemName = removeWithQuantityMatch[2].trim();
             const quantity = parseQuantity(quantityText);
 
+            // Only process if we could parse the quantity
             if (quantity !== undefined) {
-                commands.push({ type: 'ADD_ITEM', item: itemName, quantity });
-            } else {
-                // If we can't parse the quantity, treat the whole thing as an item name
-                commands.push({ type: 'ADD_ITEM', item: trimmedSentence, quantity: 1 });
+                commands.push({ type: 'REMOVE_ITEM', item: itemName, quantity });
             }
             continue;
         }
 
-        // Check for standalone item (default quantity 1)
-        // Skip if it's just a number
-        if (!/^\d+$/.test(trimmedSentence)) {
-            commands.push({ type: 'ADD_ITEM', item: trimmedSentence, quantity: 1 });
+        // Pattern 2: "remove [item]" - remove all quantities
+        const removeWithoutQuantityPattern = /(?:remove|take away|delete)\s+(.+)$/i;
+        const removeWithoutQuantityMatch = trimmedSentence.match(removeWithoutQuantityPattern);
+
+        if (removeWithoutQuantityMatch) {
+            const itemName = removeWithoutQuantityMatch[1].trim();
+            commands.push({ type: 'REMOVE_ITEM', item: itemName }); // No quantity specified
+            continue;
         }
     }
 
@@ -218,50 +328,35 @@ const parseCommand = (transcript: string): CommandAction[] => {
 };
 
 /**
- * Find a menu item by name (partial match)
- */
-const findMenuItem = (itemName: string, menuItems: FoodItem[]): FoodItem | undefined => {
-    return menuItems.find(item =>
-        item.name.toLowerCase().includes(itemName.toLowerCase())
-    );
-};
-
-/**
  * VoiceAssistant component for kiosk ordering interface
  */
 export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], onCartUpdate }) => {
     // State for cart items
     const [cart, setCart] = useState<CartItem[]>([]);
-
     // State for transcript
     const [transcript, setTranscript] = useState('');
-
     // State for whether we're actively listening for commands
     const [isListening, setIsListening] = useState(false);
-
     // State for status messages
     const [statusMessage, setStatusMessage] = useState('Say "start recording" to begin');
-
     // State for passive listening mode
     const [passiveListening, setPassiveListening] = useState(false);
-
     // State for browser support check
     const [browserSupported, setBrowserSupported] = useState(true);
-
     // State for initialization status
     const [isInitialized, setIsInitialized] = useState(false);
-
     // State for cart popover visibility
     const [showCart, setShowCart] = useState(false);
-
     // State to control when to reset transcript
     const [shouldResetTranscript, setShouldResetTranscript] = useState(false);
-
+    // State to track if cart was updated
+    const [cartUpdated, setCartUpdated] = useState(false);
     // Reference to store the previous transcript to avoid duplicate processing
     const lastProcessedTranscriptRef = useRef('');
-
     // Reference to track if component is mounted
     const isMountedRef = useRef(true);
+    // Reference for Fuse instance
+    const fuseRef = useRef<Fuse<FoodItem> | null>(null);
 
     // Calculate total items in cart
     const totalItems = cart.reduce((sum, item) => sum + item.quantity, 0);
@@ -276,6 +371,13 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
         continuous: true,
         language: 'en-US'
     });
+
+    // Initialize Fuse instance for fuzzy matching
+    useEffect(() => {
+        if (menuItems.length > 0) {
+            fuseRef.current = createFuseInstance(menuItems);
+        }
+    }, [menuItems]);
 
     // Initialize speech recognition on component mount
     useEffect(() => {
@@ -336,20 +438,17 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
     // Handle transcript reset when requested
     useEffect(() => {
         if (shouldResetTranscript) {
-            const timeoutId = setTimeout(() => {
-                resetTranscript();
-                setTranscript('');
-                lastProcessedTranscriptRef.current = '';
-                setShouldResetTranscript(false);
-            }, 1500); // Increased delay to make it less abrupt
-
-            return () => clearTimeout(timeoutId);
+            // Immediately reset the transcript without delay
+            resetTranscript();
+            setTranscript('');
+            lastProcessedTranscriptRef.current = '';
+            setShouldResetTranscript(false);
         }
     }, [shouldResetTranscript, resetTranscript]);
 
     // Process commands when we have a final transcript
     useEffect(() => {
-        if (!transcript || !isInitialized) return;
+        if (!transcript || !isInitialized || !fuseRef.current) return;
 
         // Avoid processing the same transcript multiple times
         if (transcript === lastProcessedTranscriptRef.current) return;
@@ -357,131 +456,84 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
 
         // Always check for "start recording" command, even in passive mode
         const normalizedText = transcript.toLowerCase().trim();
-        if (normalizedText.includes('start recording') && !isListening) {
+        if ((normalizedText.includes('start recording') ||
+            normalizedText.includes('begin recording') ||
+            normalizedText.includes('start listening')) && !isListening) {
             setIsListening(true);
             setStatusMessage('Now actively listening for commands...');
-            // Don't reset transcript here, let it accumulate
+            // Reset transcript to start fresh
+            setShouldResetTranscript(true);
             return;
         }
 
         // Only process other commands if we are actively listening
         if (isListening) {
-            // Parse the command from the transcript
-            const commands = parseCommand(transcript);
+            // Extract items and commands from the transcript
+            const { items, commands: commandPhrases } = extractItemsAndCommands(transcript);
 
-            // Process each command
-            for (const command of commands) {
-                switch (command.type) {
-                    case 'START_RECORDING':
-                        // Already handled above
-                        break;
-                    case 'STOP_RECORDING':
-                        setIsListening(false);
-                        setStatusMessage('Recording stopped. Say "start recording" to begin again.');
-                        // Set flag to reset transcript after a delay
-                        setShouldResetTranscript(true);
-                        break;
-                    case 'ADD_ITEM': {
-                        const menuItem = findMenuItem(command.item, menuItems);
-                        if (menuItem) {
-                            setCart(prevCart => {
-                                const existingItemIndex = prevCart.findIndex(item => item.id === menuItem.id);
-                                if (existingItemIndex >= 0) {
-                                    // Update quantity if item already exists in cart
-                                    const updatedCart = [...prevCart];
-                                    const existingItem = updatedCart[existingItemIndex];
-                                    // Create a new cart item with updated quantity
-                                    const updatedItem: CartItem = {
-                                        ...existingItem,
-                                        quantity: existingItem.quantity + command.quantity
-                                    };
-                                    updatedCart[existingItemIndex] = updatedItem;
-                                    return updatedCart;
-                                } else {
-                                    // Add new item to cart - create a CartItem from FoodItem
-                                    const newItem: CartItem = {
-                                        ...menuItem,
-                                        quantity: command.quantity
-                                    };
-                                    return [...prevCart, newItem];
-                                }
-                            });
-                            setStatusMessage(`Added ${command.quantity} ${menuItem.name}(s) to cart.`);
-                        } else {
-                            setStatusMessage(`Item "${command.item}" not found in menu.`);
-                        }
-                        break;
-                    }
-                    case 'REMOVE_ITEM': {
-                        const menuItem = findMenuItem(command.item, menuItems);
-                        if (menuItem) {
-                            setCart(prevCart => {
-                                const existingItemIndex = prevCart.findIndex(item => item.id === menuItem.id);
-                                if (existingItemIndex >= 0) {
-                                    const existingItem = prevCart[existingItemIndex];
-                                    let updatedCart = [...prevCart];
+            // Process the items to update the cart
+            if (items.length > 0) {
+                const { updatedCart, statusMessages } = processMultipleItemCommands(
+                    items,
+                    menuItems,
+                    cart,
+                    fuseRef.current
+                );
 
-                                    // If quantity is specified, remove that quantity
-                                    if (command.quantity !== undefined) {
-                                        const newQuantity = existingItem.quantity - command.quantity;
-                                        if (newQuantity <= 0) {
-                                            // Remove the item if quantity becomes zero or negative
-                                            updatedCart = updatedCart.filter(item => item.id !== menuItem.id);
-                                        } else {
-                                            // Update the quantity
-                                            updatedCart[existingItemIndex] = {
-                                                ...existingItem,
-                                                quantity: newQuantity
-                                            };
-                                        }
-                                    } else {
-                                        // Remove the item entirely
-                                        updatedCart = updatedCart.filter(item => item.id !== menuItem.id);
-                                    }
+                setCart(updatedCart);
+                setStatusMessage(statusMessages.join(' '));
+                setCartUpdated(true);
+            }
 
-                                    return updatedCart;
-                                } else {
-                                    // Item not in cart, nothing to remove
-                                    return prevCart;
-                                }
-                            });
+            // Process the command phrases
+            let shouldReset = items.length > 0; // Reset transcript if we processed items
 
-                            if (command.quantity !== undefined) {
-                                setStatusMessage(`Removed ${command.quantity} ${menuItem.name}(s) from cart.`);
-                            } else {
-                                setStatusMessage(`Removed all ${menuItem.name}(s) from cart.`);
-                            }
-                        } else {
-                            setStatusMessage(`Item "${command.item}" not found in menu.`);
-                        }
-                        break;
-                    }
-                    case 'RESET_CART':
-                        setCart([]);
-                        setStatusMessage('Cart has been cleared.');
-                        break;
-                    case 'VIEW_CART':
-                        setShowCart(true);
-                        setStatusMessage('Viewing cart.');
-                        break;
-                    case 'BACK_TO_MENU':
+            for (const phrase of commandPhrases) {
+                if (phrase.includes('go to cart') || phrase.includes('show cart') ||
+                    phrase.includes('view cart') || phrase.includes('see my cart')) {
+                    setShowCart(true);
+                    setStatusMessage('Viewing cart.');
+                    shouldReset = true;
+                } else if (phrase.includes('add more') || phrase.includes('back to menu') ||
+                    phrase.includes('continue shopping') || phrase.includes('add items') ||
+                    phrase.includes('order more') || phrase.includes('more items') ||
+                    phrase.includes('continue ordering')) {
+                    // Enhanced handling for "add more" command
+                    if (showCart) {
                         setShowCart(false);
                         setStatusMessage('Back to menu. Say "go to cart" to view your order.');
-                        break;
-                    case 'UNKNOWN':
-                        setStatusMessage('Command not recognized. Please try again.');
-                        break;
+                    } else {
+                        setStatusMessage('Already on menu. Say "go to cart" to view your order.');
+                    }
+                    shouldReset = true;
+                } else if (phrase.includes('reset') || phrase.includes('clear cart') ||
+                    phrase.includes('empty cart') || phrase.includes('start over')) {
+                    setCart([]);
+                    setStatusMessage('Cart has been cleared.');
+                    setCartUpdated(true);
+                    shouldReset = true;
+                } else if (phrase.includes('stop recording') || phrase.includes('end recording') ||
+                    phrase.includes('stop listening')) {
+                    setIsListening(false);
+                    setStatusMessage('Recording stopped. Say "start recording" to begin again.');
+                    shouldReset = true;
                 }
             }
+
+            // Reset transcript after processing
+            if (shouldReset) {
+                setShouldResetTranscript(true);
+            }
         }
-    }, [transcript, isListening, menuItems, isInitialized]);
+    }, [transcript, isListening, menuItems, isInitialized, showCart, cart]);
 
     // Update parent component when cart changes
     useEffect(() => {
-        if (onCartUpdate) {
+        if (onCartUpdate && cartUpdated) {
             onCartUpdate(cart);
+            setCartUpdated(false);
         }
-    }, [cart, onCartUpdate]);
+    }, [cart, onCartUpdate, cartUpdated]);
 
     // Start/stop listening based on isListening state
     useEffect(() => {
@@ -511,14 +563,12 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
         if (isListening) {
             setIsListening(false);
             setStatusMessage('Recording stopped.');
-            // Reset transcript when stopping recording
             setShouldResetTranscript(true);
         } else {
             setIsListening(true);
             setStatusMessage('Listening for commands...');
-            // Reset the last processed transcript reference to allow processing new commands
             lastProcessedTranscriptRef.current = '';
-            // But don't reset the actual transcript display
+            setShouldResetTranscript(true);
         }
     };
 
@@ -526,12 +576,17 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
     const handleResetOrder = () => {
         setCart([]);
         setStatusMessage('Order has been reset.');
+        setCartUpdated(true);
     };
 
-    // Handle add more items from Cart component
+    // Enhanced "add more" button handler
     const handleAddItems = () => {
+        // Ensure cart is closed
         setShowCart(false);
+        // Provide clear feedback to user
         setStatusMessage('Back to menu. Say "go to cart" to view your order.');
+        // Reset transcript to prepare for new commands
+        setShouldResetTranscript(true);
     };
 
     // Toggle cart visibility
@@ -597,8 +652,8 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
                             Cart
                             {totalItems > 0 && (
                                 <span className="absolute -top-2 -right-2 bg-primary text-primary-foreground text-xs rounded-full h-5 w-5 flex items-center justify-center">
-                  {totalItems}
-                </span>
+                                    {totalItems}
+                                </span>
                             )}
                         </Button>
                     </div>
@@ -613,11 +668,11 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
                                     'bg-red-500'
                             }`}></div>
                             <span className="text-sm text-muted-foreground">
-                {passiveListening ?
-                    (isListening ? 'Actively listening...' : 'Passively listening...') :
-                    'Not listening'
-                }
-              </span>
+                                {passiveListening ?
+                                    (isListening ? 'Actively listening...' : 'Passively listening...') :
+                                    'Not listening'
+                                }
+                            </span>
                         </div>
                         <Button
                             onClick={toggleRecording}
@@ -637,12 +692,10 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
                             )}
                         </Button>
                     </div>
-
                     {/* Status message */}
                     <div className="bg-muted p-3 rounded">
                         <p className="text-sm text-foreground">{statusMessage}</p>
                     </div>
-
                     {/* Transcript display */}
                     <div className="bg-muted p-4 rounded-lg">
                         <p className="text-sm text-muted-foreground mb-2">Heard:</p>
@@ -656,20 +709,17 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
                             )}
                         </div>
                     </div>
-
                     {/* Help text for available commands */}
                     <div className="text-xs text-muted-foreground space-y-1">
                         <p><strong>Voice Commands:</strong></p>
                         <p>• "Start recording" - Begin voice ordering</p>
-                        <p>• "Stop recording" – Stop voice ordering and reset transcript</p>
-                        <p>• "Add [quantity] [item]" – Add item to cart (e.g., "add one butter chicken")</p>
-                        <p>• "[quantity] [item]" – Add item to cart (e.g., "one mango lassi")</p>
-                        <p>• "[item]" – Add one item to cart (e.g., "burger")</p>
-                        <p>• "Remove [item]" – Remove all of that item from cart</p>
-                        <p>• "Remove [quantity] [item]" – Remove specific quantity (e.g., "remove 1 burger")</p>
-                        <p>• "Reset" – Clear all items from cart</p>
-                        <p>• "Go to cart" – View your cart</p>
-                        <p>• "Add more" – Return to menu</p>
+                        <p>• "[quantity] [item]" - Add item to cart (e.g., "2 Butter Chicken")</p>
+                        <p>• Multiple items: "2 idli 3 mango 3 mango lassi 5 gulab jamun"</p>
+                        <p>• "Remove [item]" - Remove all of that item (e.g., "Remove Mango Lassi")</p>
+                        <p>• "Remove [quantity] [item]" - Remove specific quantity (e.g., "Remove 1 Gulab Jamun")</p>
+                        <p>• "Go to cart" - View your cart</p>
+                        <p>• "Add more" - Return to menu from cart</p>
+                        <p>• "Stop recording" - Stop voice ordering</p>
                     </div>
                 </CardContent>
             </Card>
