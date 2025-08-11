@@ -255,9 +255,8 @@ const parseCommand = (transcript: string, fuse: Fuse<FoodItem>): CommandAction[]
         }
 
         if (trimmedSentence.includes('stop recording') ||
-            trimmedSentence.includes('end recording') ||
-            trimmedSentence.includes('stop listening')) {
-            commands.push({ type: 'STOP_RECORDING' });
+            trimmedSentence.includes('end recording')) {
+            commands.push({type: 'STOP_RECORDING'});
             continue;
         }
 
@@ -516,13 +515,9 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
                     phrase.includes('stop listening')) {
                     setIsListening(false);
                     setStatusMessage('Recording stopped. Say "start recording" to begin again.');
-                    shouldReset = true;
+                    resetTranscript();
+                    setTranscript("");
                 }
-            }
-
-            // Reset transcript after processing
-            if (shouldReset) {
-                setShouldResetTranscript(true);
             }
         }
     }, [transcript, isListening, menuItems, isInitialized, showCart, cart]);
