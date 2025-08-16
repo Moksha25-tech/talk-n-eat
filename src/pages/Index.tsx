@@ -137,6 +137,7 @@ const Index = () => {
               <VoiceAssistant
                   menuItems={mockFoodItems}
                   onCartUpdate={setCartItems}
+                  backendUrl="http://localhost:3001/api"   // <-- ✅ added backend URL
               />
 
               {currentView === 'menu' && (

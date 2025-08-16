@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, {useState, useEffect, useRef, useCallback} from 'react';
 import SpeechRecognition, { useSpeechRecognition } from 'react-speech-recognition';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Plus, RotateCcw, ShoppingCart } from 'lucide-react';
+import {Mic, MicOff, Plus, RotateCcw, ShoppingCart, Upload} from 'lucide-react';
 import { Cart } from './Cart';
 import { CartItem, FoodItem } from '../types';
 import Fuse from 'fuse.js';
@@ -21,6 +21,7 @@ type CommandAction =
 interface VoiceAssistantProps {
     menuItems: FoodItem[];
     onCartUpdate: (cartItems: CartItem[]) => void;
+    backendUrl?: string;
 }
 
 /**
@@ -233,103 +234,9 @@ const processMultipleItemCommands = (
 };
 
 /**
- * Parse the transcript to identify and execute commands
- */
-const parseCommand = (transcript: string, fuse: Fuse<FoodItem>): CommandAction[] => {
-    const normalizedText = transcript.toLowerCase().trim();
-    const commands: CommandAction[] = [];
-
-    // Split transcript into sentences to handle multiple commands
-    const sentences = normalizedText.split(/[.!?]+/).filter(s => s.trim());
-
-    for (const sentence of sentences) {
-        const trimmedSentence = sentence.trim();
-        if (!trimmedSentence) continue;
-
-        // Check for recording control commands
-        if (trimmedSentence.includes('start recording') ||
-            trimmedSentence.includes('begin recording') ||
-            trimmedSentence.includes('start listening')) {
-            commands.push({ type: 'START_RECORDING' });
-            continue;
-        }
-
-        if (trimmedSentence.includes('stop recording') ||
-            trimmedSentence.includes('end recording')) {
-            commands.push({type: 'STOP_RECORDING'});
-            continue;
-        }
-
-        // Check for view navigation commands
-        if (trimmedSentence.includes('go to cart') ||
-            trimmedSentence.includes('show cart') ||
-            trimmedSentence.includes('view cart') ||
-            trimmedSentence.includes('see my cart')) {
-            commands.push({ type: 'VIEW_CART' });
-            continue;
-        }
-
-        // Enhanced "add more" command detection with more variations
-        if (trimmedSentence.includes('add more') ||
-            trimmedSentence.includes('back to menu') ||
-            trimmedSentence.includes('continue shopping') ||
-            trimmedSentence.includes('add items') ||
-            trimmedSentence.includes('order more') ||
-            trimmedSentence.includes('more items') ||
-            trimmedSentence.includes('continue ordering')) {
-            commands.push({ type: 'BACK_TO_MENU' });
-            continue;
-        }
-
-        // Check for cart management commands
-        if (trimmedSentence.includes('reset') ||
-            trimmedSentence.includes('clear cart') ||
-            trimmedSentence.includes('empty cart') ||
-            trimmedSentence.includes('start over')) {
-            commands.push({ type: 'RESET_CART' });
-            continue;
-        }
-
-        // Check for remove command patterns
-        // Pattern 1: "remove [quantity] [item]" - remove specific quantity
-        const removeWithQuantityPattern = /(?:remove|take away|delete)\s+(\d+|\w+)\s+(.+)$/i;
-        const removeWithQuantityMatch = trimmedSentence.match(removeWithQuantityPattern);
-
-        if (removeWithQuantityMatch) {
-            const quantityText = removeWithQuantityMatch[1];
-            const itemName = removeWithQuantityMatch[2].trim();
-            const quantity = parseQuantity(quantityText);
-
-            // Only process if we could parse the quantity
-            if (quantity !== undefined) {
-                commands.push({ type: 'REMOVE_ITEM', item: itemName, quantity });
-            }
-            continue;
-        }
-
-        // Pattern 2: "remove [item]" - remove all quantities
-        const removeWithoutQuantityPattern = /(?:remove|take away|delete)\s+(.+)$/i;
-        const removeWithoutQuantityMatch = trimmedSentence.match(removeWithoutQuantityPattern);
-
-        if (removeWithoutQuantityMatch) {
-            const itemName = removeWithoutQuantityMatch[1].trim();
-            commands.push({ type: 'REMOVE_ITEM', item: itemName }); // No quantity specified
-            continue;
-        }
-    }
-
-    // If no commands were found but transcript is not empty
-    if (commands.length === 0 && normalizedText) {
-        commands.push({ type: 'UNKNOWN' });
-    }
-
-    return commands;
-};
-
-/**
  * VoiceAssistant component for kiosk ordering interface
  */
-export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], onCartUpdate }) => {
+export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], onCartUpdate,backendUrl = 'http://localhost:3001/api'}) => {
     // State for cart items
     const [cart, setCart] = useState<CartItem[]>([]);
     // State for transcript
@@ -357,8 +264,20 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
     // Reference for Fuse instance
     const fuseRef = useRef<Fuse<FoodItem> | null>(null);
 
+    // State for recording
+    const [isRecording, setIsRecording] = useState(false);
+    const [recordingDuration, setRecordingDuration] = useState(0);
+    const [isUploading, setIsUploading] = useState(false);
+
     // Calculate total items in cart
     const totalItems = cart.reduce((sum, item) => sum + item.quantity, 0);
+
+
+    // MediaRecorder refs & server recording url
+    const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+    const recordedChunksRef = useRef<BlobPart[]>([]);
+    const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
+    const streamRef = useRef<MediaStream | null>(null);
 
     // Use the react-speech-recognition hook
     const {
@@ -378,6 +297,124 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
         }
     }, [menuItems]);
 
+    const startAudioRecording = useCallback(async () => {
+        try {
+            // Request microphone permission
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    sampleRate: 44100,
+                }
+            });
+
+            streamRef.current = stream;
+            recordedChunksRef.current = [];
+            // Create MediaRecorder
+            const mediaRecorder = new MediaRecorder(stream, {
+                mimeType: 'audio/webm;codecs=opus'
+            });
+            mediaRecorderRef.current = mediaRecorder;
+
+            // Handle data available event
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    recordedChunksRef.current.push(event.data);
+                }
+            };
+
+            // Handle recording stop
+            mediaRecorder.onstop = () => {
+                uploadRecording();
+            };
+            // Start recording
+            mediaRecorder.start(1000); // Collect data every second
+            setIsRecording(true);
+            setRecordingDuration(0);
+
+            // Start timer
+            recordingTimerRef.current = setInterval(() => {
+                setRecordingDuration(prev => prev + 1);
+            }, 1000);
+
+            console.log('Audio recording started');
+        } catch (error) {
+            console.error('Error starting audio recording:', error);
+            setStatusMessage('Error accessing microphone. Please check permissions.');
+        }
+    }, []);
+
+
+    const stopAudioRecording = useCallback(() => {
+        if (mediaRecorderRef.current && isRecording) {
+            mediaRecorderRef.current.stop();
+            setIsRecording(false);
+
+            // Clear timer
+            if (recordingTimerRef.current) {
+                clearInterval(recordingTimerRef.current);
+                recordingTimerRef.current = null;
+            }
+
+            // Stop media stream
+            if (streamRef.current) {
+                streamRef.current.getTracks().forEach(track => track.stop());
+                streamRef.current = null;
+            }
+
+            console.log('Audio recording stopped');
+        }
+    }, [isRecording]);
+
+    const uploadRecording = useCallback(async () => {
+        if (recordedChunksRef.current.length === 0) {
+            console.warn('No recorded data to upload');
+            return;
+        }
+
+        try {
+            setIsUploading(true);
+
+            // Create blob from recorded chunks
+            const blob = new Blob(recordedChunksRef.current, {
+                type: 'audio/webm;codecs=opus'
+            });
+
+            // Create FormData
+            const formData = new FormData();
+            const timestamp = new Date().toISOString();
+            const filename = `recording_${timestamp}.webm`;
+
+            formData.append('audio', blob, filename);
+            formData.append('timestamp', timestamp);
+            formData.append('duration', recordingDuration.toString());
+            formData.append('transcript', transcript || '');
+            formData.append('cartItems', JSON.stringify(cart));
+
+            // Upload to backend
+            const response = await fetch(`${backendUrl}/upload-recording`, {
+                method: 'POST',
+                body: formData,
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                console.log('Recording uploaded successfully:', result);
+                setStatusMessage(`Recording saved successfully (${recordingDuration}s)`);
+            } else {
+                throw new Error(`Upload failed: ${response.statusText}`);
+            }
+        } catch (error) {
+            console.error('Error uploading recording:', error);
+            setStatusMessage('Error uploading recording to server');
+        } finally {
+            setIsUploading(false);
+            // Clear recorded chunks
+            recordedChunksRef.current = [];
+            setRecordingDuration(0);
+        }
+    }, [backendUrl, recordingDuration, transcript, cart]);
+
     // Initialize speech recognition on component mount
     useEffect(() => {
         // Set up mounted ref
@@ -396,7 +433,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
         // Start passive listening with proper error handling
         const initializeSpeechRecognition = async () => {
             try {
-                await SpeechRecognition.startListening({ continuous: true });
+                await SpeechRecognition.startListening({continuous: true});
                 if (isMountedRef.current) {
                     setPassiveListening(true);
                     setStatusMessage('Passive listening active. Say "start recording" to begin ordering.');
@@ -423,6 +460,12 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
                 } catch (error) {
                     console.error('Error stopping speech recognition:', error);
                 }
+            }
+            if (recordingTimerRef.current) {
+                clearInterval(recordingTimerRef.current);
+            }
+            if (streamRef.current) {
+                streamRef.current.getTracks().forEach(track => track.stop());
             }
         };
     }, [browserSupportsSpeechRecognition]);
@@ -459,6 +502,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
             normalizedText.includes('begin recording') ||
             normalizedText.includes('start listening')) && !isListening) {
             setIsListening(true);
+            startAudioRecording();
             setStatusMessage('Now actively listening for commands...');
             // Reset transcript to start fresh
             setShouldResetTranscript(true);
@@ -468,11 +512,11 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
         // Only process other commands if we are actively listening
         if (isListening) {
             // Extract items and commands from the transcript
-            const { items, commands: commandPhrases } = extractItemsAndCommands(transcript);
+            const {items, commands: commandPhrases} = extractItemsAndCommands(transcript);
 
             // Process the items to update the cart
             if (items.length > 0) {
-                const { updatedCart, statusMessages } = processMultipleItemCommands(
+                const {updatedCart, statusMessages} = processMultipleItemCommands(
                     items,
                     menuItems,
                     cart,
@@ -514,13 +558,17 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
                 } else if (phrase.includes('stop recording') || phrase.includes('end recording') ||
                     phrase.includes('stop listening')) {
                     setIsListening(false);
-                    setStatusMessage('Recording stopped. Say "start recording" to begin again.');
+                    stopAudioRecording(); // Stop audio recording
+                    setStatusMessage('Recording stopped and saved. Say "start recording" to begin again.');
                     resetTranscript();
                     setTranscript("");
                 }
             }
+            if (shouldReset) {
+                setShouldResetTranscript(true);
+            }
         }
-    }, [transcript, isListening, menuItems, isInitialized, showCart, cart]);
+    }, [transcript, isListening, menuItems, isInitialized, showCart, cart, startAudioRecording, stopAudioRecording]);
 
     // Update parent component when cart changes
     useEffect(() => {
@@ -532,36 +580,38 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
 
     // Start/stop listening based on isListening state
     useEffect(() => {
-        if (isListening) {
-            SpeechRecognition.startListening();
-        } else {
+        if (isListening && !isRecording) {
+            SpeechRecognition.startListening({continuous: true});
+        } else if (!isListening) {
             SpeechRecognition.stopListening();
         }
-    }, [isListening]);
+    }, [isListening, isRecording]);
 
     // Auto-restart speech recognition if it stops unexpectedly
     useEffect(() => {
-        if (browserSupportsSpeechRecognition && !listening && isInitialized) {
+        if (browserSupportsSpeechRecognition && !listening && isInitialized && passiveListening) {
             const timeoutId = setTimeout(() => {
                 try {
-                    SpeechRecognition.startListening({ continuous: true });
+                    SpeechRecognition.startListening({continuous: true});
                 } catch (error) {
                     console.error('Error restarting speech recognition:', error);
                 }
             }, 1000);
             return () => clearTimeout(timeoutId);
         }
-    }, [listening, browserSupportsSpeechRecognition, isInitialized]);
+    }, [listening, browserSupportsSpeechRecognition, isInitialized, passiveListening]);
 
     // Handle manual start/stop of recording
-    const toggleRecording = () => {
+    const toggleRecording = async () => {
         if (isListening) {
             setIsListening(false);
-            setStatusMessage('Recording stopped.');
+            stopAudioRecording();
+            setStatusMessage('Recording stopped and saved.');
             setShouldResetTranscript(true);
         } else {
             setIsListening(true);
-            setStatusMessage('Listening for commands...');
+            await startAudioRecording();
+            setStatusMessage('Listening and recording...');
             lastProcessedTranscriptRef.current = '';
             setShouldResetTranscript(true);
         }
@@ -588,6 +638,12 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
     const toggleCart = () => {
         setShowCart(!showCart);
         setStatusMessage(showCart ? 'Back to menu.' : 'Viewing cart.');
+    };
+
+    const formatDuration = (seconds: number): string => {
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
     };
 
     // If browser doesn't support speech recognition
@@ -643,12 +699,13 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
                             size="sm"
                             className="relative"
                         >
-                            <ShoppingCart className="h-4 w-4 mr-1" />
+                            <ShoppingCart className="h-4 w-4 mr-1"/>
                             Cart
                             {totalItems > 0 && (
-                                <span className="absolute -top-2 -right-2 bg-primary text-primary-foreground text-xs rounded-full h-5 w-5 flex items-center justify-center">
-                                    {totalItems}
-                                </span>
+                                <span
+                                    className="absolute -top-2 -right-2 bg-primary text-primary-foreground text-xs rounded-full h-5 w-5 flex items-center justify-center">
+                                {totalItems}
+                            </span>
                             )}
                         </Button>
                     </div>
@@ -661,55 +718,72 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
                                 passiveListening ?
                                     (isListening ? 'bg-green-500' : 'bg-yellow-500') :
                                     'bg-red-500'
-                            }`}></div>
+                            }`}/>
                             <span className="text-sm text-muted-foreground">
-                                {passiveListening ?
-                                    (isListening ? 'Actively listening...' : 'Passively listening...') :
-                                    'Not listening'
-                                }
-                            </span>
+                            {passiveListening ?
+                                (isListening ? 'Actively listening...' : 'Passively listening...') :
+                                'Not listening'}
+                        </span>
+                            {isRecording && (
+                                <div className="flex items-center space-x-2 bg-red-100 px-2 py-1 rounded-full">
+                                    <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+                                    <span className="text-xs text-red-700 font-medium">
+                                    REC {formatDuration(recordingDuration)}
+                                </span>
+                                </div>
+                            )}
+                            {isUploading && (
+                                <div className="flex items-center space-x-2 bg-blue-100 px-2 py-1 rounded-full">
+                                    <Upload className="w-3 h-3 text-blue-600 animate-spin"/>
+                                    <span className="text-xs text-blue-700">Uploading...</span>
+                                </div>
+                            )}
                         </div>
                         <Button
                             onClick={toggleRecording}
                             variant={isListening ? "destructive" : "default"}
                             size="sm"
+                            disabled={isUploading}
                         >
                             {isListening ? (
                                 <>
-                                    <RotateCcw className="h-4 w-4 mr-1" />
-                                    Stop Recording
+                                    <MicOff className="h-4 w-4 mr-1"/> Stop Recording
                                 </>
                             ) : (
                                 <>
-                                    <Plus className="h-4 w-4 mr-1" />
-                                    Start Recording
+                                    <Mic className="h-4 w-4 mr-1"/> Start Recording
                                 </>
                             )}
                         </Button>
                     </div>
+
                     {/* Status message */}
                     <div className="bg-muted p-3 rounded">
                         <p className="text-sm text-foreground">{statusMessage}</p>
                     </div>
+
                     {/* Transcript display */}
                     <div className="bg-muted p-4 rounded-lg">
                         <p className="text-sm text-muted-foreground mb-2">Heard:</p>
                         <div className="bg-background p-3 rounded border min-h-[60px] text-foreground">
                             {transcript || (
                                 <p className="text-muted-foreground italic">
-                                    {isListening ? 'Listening for commands...' :
-                                        passiveListening ? 'Passively listening for "start recording"...' :
-                                            'Say "start recording" to begin'}
+                                    {isListening
+                                        ? 'Listening for commands...'
+                                        : passiveListening
+                                            ? 'Passively listening for "start recording"...'
+                                            : 'Say "start recording" to begin'}
                                 </p>
                             )}
                         </div>
                     </div>
+
                     {/* Help text for available commands */}
                     <div className="text-xs text-muted-foreground space-y-1">
                         <p><strong>Voice Commands:</strong></p>
-                        <p>• "Start recording" - Begin voice ordering</p>
+                        <p>• "Start recording" - Begin voice ordering and audio recording</p>
                         <p>• "[quantity] [item]" - Add item to cart (e.g., "2 Butter Chicken")</p>
-                        <p>• Multiple items: "2 idli 3 mango 3 mango lassi 5 gulab jamun"</p>
+                        <p>• Multiple items: "2 idli 3 mango lassi 5 gulab jamun"</p>
                         <p>• "Remove [item]" - Remove all of that item (e.g., "Remove Mango Lassi")</p>
                         <p>• "Remove [quantity] [item]" - Remove specific quantity (e.g., "Remove 1 Gulab Jamun")</p>
                         <p>• "Go to cart" - View your cart</p>
@@ -725,13 +799,7 @@ export const VoiceAssistant: React.FC<VoiceAssistantProps> = ({ menuItems = [], 
                     <div className="bg-background rounded-lg w-full max-w-md max-h-[90vh] overflow-auto">
                         <div className="p-4 border-b flex justify-between items-center">
                             <h3 className="text-lg font-semibold">Your Cart</h3>
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={toggleCart}
-                            >
-                                ×
-                            </Button>
+                            <Button variant="ghost" size="sm" onClick={toggleCart}>×</Button>
                         </div>
                         <div className="p-4">
                             <Cart
